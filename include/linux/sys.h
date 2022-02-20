@@ -1,3 +1,5 @@
+// extern - команда которая говорит компилятору что переменная объявлена в другом месте в
+// глобальной области видимости
 extern int sys_setup();
 extern int sys_exit();
 extern int sys_fork();

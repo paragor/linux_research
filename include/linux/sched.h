@@ -47,7 +47,9 @@ struct i387_struct {
 	long	st_space[20];	/* 8*10 bytes for each FP-reg = 80 bytes */
 };
 
+// The task state segment (TSS)
 struct tss_struct {
+	// long = 32 бита ( 4 байта )
 	long	back_link;	/* 16 high bits zero */
 	long	esp0;
 	long	ss0;		/* 16 high bits zero */
@@ -147,9 +149,32 @@ extern void wake_up(struct task_struct ** p);
  * Entry into gdt where to find first TSS. 0-nul, 1-cs, 2-ds, 3-syscall
  * 4-TSS0, 5-LDT0, 6-TSS1 etc ...
  */
+// https://ru.wikipedia.org/wiki/GDT
 #define FIRST_TSS_ENTRY 4
 #define FIRST_LDT_ENTRY (FIRST_TSS_ENTRY+1)
+// ( n << 4) + (4 << 3) = n << 4 + 32
+// GDT - это таблица где хранятся адреса то TSS (представляет собой слепки задач - т.е. контексты)
+// 32 - это сдвиг благодаря которому процессор понимает что поиск будет происходить в GDT таблице
+// https://pdos.csail.mit.edu/6.828/2005/readings/i386/s05_01.htm#fig5-6
+// xxxx xxxx xxxx 0000 - по последним четерем нулевым битам процессор выкупает что поиск происходит в GDT
+// 32 (10) = 100000 (2)
+// для 5 таски:
+// 0000 0000 0101 0000
+// +
+// 0000 0000 0010 0000
+// =
+// 0000 0000 0111 0000
 #define _TSS(n) ((((unsigned long) n)<<4)+(FIRST_TSS_ENTRY<<3))
+// вообще таблица GDT выглядит так (между записями 32 байта разница):
+// Task #	16-bit Segment Selector
+// 0		000000000010 0  0  00
+// 1		000000000011 0  0  00
+// 2		000000000100 0  0  00
+// 3		000000000101 0  0  00
+// 4		000000000110 0  0  00
+// 5		000000000111 0  0  00
+// 6		000000001000 0  0  00
+// 7		000000001001 0  0  00
 #define _LDT(n) ((((unsigned long) n)<<4)+(FIRST_LDT_ENTRY<<3))
 #define ltr(n) __asm__("ltr %%ax"::"a" (_TSS(n)))
 #define lldt(n) __asm__("lldt %%ax"::"a" (_LDT(n)))
@@ -164,19 +189,44 @@ __asm__("str %%ax\n\t" \
  * checking that n isn't the current task, in which case it does nothing.
  * This also clears the TS-flag if the task we switched to has used
  * tha math co-processor latest.
+ *
+ * https://habr.com/ru/post/438042/ - тут подробности работы
  */
 #define switch_to(n) {\
 struct {long a,b;} __tmp; \
-__asm__("cmpl %%ecx,_current\n\t" \
-	"je 1f\n\t" \
-	"xchgl %%ecx,_current\n\t" \
-	"movw %%dx,%1\n\t" \
-	"ljmp %0\n\t" \
-	"cmpl %%ecx,%2\n\t" \
+__asm__("cmpl %%ecx,_current\n\t" \ // _current - это указатель на текущую таску в планировщике CPU.
+									// Это переменная которая объявлена на 136 строке
+									// ecx == "c" ((long) task[n]))
+	"je 1f\n\t" \ //перейти к пометке 1
+	"xchgl %%ecx,_current\n\t" \ // простой свап переменных
+	"movw %%dx,%1\n\t" \ // mnemonic	source, destination,
+						 // dx == "d" _TSS(n)
+						 // 1 == "m" (*&__tmp.b)
+						 // mov  "d" _TSS(n) -> "m" (*&__tmp.b)
+	"ljmp %0\n\t" \      // фактически это свитч контекст - jump на адресс TSS
+	                     // процессор делает следующее:
+	                     // * Проверяет, разрешён ли текущий уровень привилегий
+	                     //   (мы находимся в режиме ядра, поэтому всё нормально).
+                         // * Проверяет, что TSS действителен (должен быть).
+                         // * Сохраняет всё текущее состояние задачи в старом TSS,
+                         //   всё ещё хранящемся в регистре задач (TR), так что не нужно
+                         //   задействовать EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI, ES, CS, SS, DS ,FS,
+                         //   GS и EFLAGS. EIP увеличивается до следующей инструкции и тоже сохраняется.
+                         // * Обновляет TR для новой задачи.
+                         // * Восстанавливает все регистры общего назначения, EIP и PDBR
+                         //   (своп адресного пространства). Переключатель задач завершил работу,
+                         //   поэтому устанавливается флаг TS в регистре CR0.
+
+	"cmpl %%ecx,%2\n\t" \ // здесь какая то шляпа с математическим сопроцессором происходит
+						  // я не разробрался
 	"jne 1f\n\t" \
 	"clts\n" \
-	"1:" \
+	"1:" \ // метка для джампов сюда
+	// ниже указание `: (входные данные - то есть их нет) : (выходные данные)`
+	// https://www.ibiblio.org/gferg/ldp/GCC-Inline-Assembly-HOWTO.html
+	// %0, %1,
 	::"m" (*&__tmp.a),"m" (*&__tmp.b), \
+	// %2, %3/%edx, %4/%ecx
 	"m" (last_task_used_math),"d" _TSS(n),"c" ((long) task[n])); \
 }
 
